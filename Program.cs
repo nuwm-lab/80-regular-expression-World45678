@@ -1,73 +1,94 @@
 using System;
 using System.Collections.Generic;
-using System.Linq; // Потрібно для Distinct()
+using System.Linq;
 using System.Text.RegularExpressions;
+using System.Text;
 
-namespace RegexLabImproved
+namespace RegexLabFinal
 {
     /// <summary>
-    /// Статичний клас для аналізу тексту.
-    /// Містить попередньо скомпільовані регулярні вирази для продуктивності.
+    /// Сервіс для аналізу тексту за допомогою регулярних виразів.
+    /// Реалізує патерн "Стратегія" через словник правил.
     /// </summary>
-    public static class TextAnalyzer
+    public class TextAnalyzer
     {
-        // 1. ВИПРАВЛЕНИЙ REGEX ДЛЯ АБРЕВІАТУР
-        // Логіка:
-        // Частина 1: \b[A-Z]{2,}\b 
-        //    -> Знаходить слова з 2+ великих літер (HTML, JSON). \b гарантує, що це окреме слово.
-        //    -> Це відсіює "Hello" (бо там є малі) і "I" (бо одна літера).
-        //
-        // Частина 2: \b[A-Z][A-Za-z0-9]*[#+]+
-        //    -> Знаходить терміни, що починаються з літери, але обов'язково закінчуються на # або + (C#, C++).
-        //    -> Тут ми не ставимо \b в кінці, бо #/+ не є "word char", і \b там не спрацює як очікується.
-        //
-        private const string AbbreviationPattern = @"\b[A-Z]{2,}\b|\b[A-Z][A-Za-z0-9]*[#+]+";
-        
-        // Додаткові патерни для бонусного завдання
-        private const string IpPattern = @"\b(?:\d{1,3}\.){3}\d{1,3}\b";
-        private const string DatePattern = @"\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b";
+        // Словник: Назва категорії -> Регулярний вираз
+        private readonly Dictionary<string, Regex> _patterns;
 
-        // Створюємо Regex один раз із опцією Compiled для швидкодії
-        private static readonly Regex _abbreviationRegex = new Regex(AbbreviationPattern, RegexOptions.Compiled);
-        private static readonly Regex _ipRegex = new Regex(IpPattern, RegexOptions.Compiled);
-        private static readonly Regex _dateRegex = new Regex(DatePattern, RegexOptions.Compiled);
-
-        /// <summary>
-        /// Знаходить унікальні абревіатури у тексті.
-        /// </summary>
-        public static IEnumerable<string> GetUniqueAbbreviations(string text)
+        public TextAnalyzer()
         {
-            if (string.IsNullOrWhiteSpace(text)) return Enumerable.Empty<string>();
+            // Налаштування Regex:
+            // 1. Compiled - для швидкодії при багаторазовому використанні.
+            // 2. CultureInvariant - щоб поведінка не залежала від мови ОС.
+            // 3. Timeout - захист від ReDoS атак (зависання).
+            var options = RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.ExplicitCapture;
+            var timeout = TimeSpan.FromSeconds(2.0);
 
-            // Отримуємо Matches, перетворюємо на String, фільтруємо унікальні
-            return _abbreviationRegex.Matches(text)
-                                     .Cast<Match>()
-                                     .Select(m => m.Value)
-                                     .Distinct(); 
+            _patterns = new Dictionary<string, Regex>
+            {
+                // 1. Абревіатури та тех. терміни
+                // Група 1: \b[A-Z][A-Z0-9]+\b -> Починається з букви, далі букви або цифри (HTML, HTML5, MP3). Мінімум 2 символи.
+                // Група 2: \b[A-Z]{1,2}[#+]+(?![A-Za-z0-9]) -> C#, C++, J#. 
+                //          (?![A-Za-z0-9]) - це Negative Lookahead. Означає "зупинись, якщо далі не буква і не цифра".
+                { "Абревіатури", new Regex(@"\b[A-Z][A-Z0-9]+\b|\b[A-Z]{1,2}[#+]+(?![A-Za-z0-9])", options, timeout) },
+
+                // 2. IP-адреси (IPv4)
+                { "IP-адреси",   new Regex(@"\b(?:\d{1,3}\.){3}\d{1,3}\b", options, timeout) },
+
+                // 3. Дати (формати dd.mm.yyyy, dd/mm/yyyy тощо)
+                { "Дати",        new Regex(@"\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b", options, timeout) }
+            };
         }
 
         /// <summary>
-        /// Комплексний аналіз тексту (Бонусне завдання).
+        /// Універсальний метод пошуку.
         /// </summary>
-        public static void PrintAnalysisReport(string text)
+        /// <param name="text">Вхідний текст.</param>
+        /// <param name="category">Ключ категорії (наприклад, "Абревіатури").</param>
+        /// <returns>Список унікальних значень.</returns>
+        public IEnumerable<string> GetUniqueMatches(string text, string category)
         {
-            Console.WriteLine("\n--- Звіт аналізу тексту ---");
+            if (string.IsNullOrWhiteSpace(text) || !_patterns.ContainsKey(category))
+                return Enumerable.Empty<string>();
 
-            var abbrs = _abbreviationRegex.Matches(text);
-            var ips = _ipRegex.Matches(text);
-            var dates = _dateRegex.Matches(text);
-
-            Console.WriteLine($"Знайдено сутностей:");
-            Console.WriteLine($" - Абревіатур: {abbrs.Count}");
-            Console.WriteLine($" - IP-адрес:   {ips.Count}");
-            Console.WriteLine($" - Дат:        {dates.Count}");
-
-            Console.WriteLine("\nДеталі (Абревіатури):");
-            foreach (var item in abbrs.Cast<Match>().Select(m => m.Value).Distinct())
+            try
             {
-                Console.Write($"[{item}] ");
+                return _patterns[category]
+                    .Matches(text)
+                    .Select(m => m.Value)
+                    .Distinct(); // Забезпечуємо унікальність
             }
-            Console.WriteLine("\n---------------------------");
+            catch (RegexMatchTimeoutException)
+            {
+                Console.WriteLine($"[Увага] Час очікування Regex для категорії '{category}' вичерпано.");
+                return Enumerable.Empty<string>();
+            }
+        }
+
+        /// <summary>
+        /// Генерує повний звіт по всіх категоріях.
+        /// </summary>
+        public void PrintFullReport(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                Console.WriteLine("Текст порожній.");
+                return;
+            }
+
+            Console.WriteLine("\n=== ЗВЕДЕНИЙ ЗВІТ АНАЛІЗУ ===");
+            Console.WriteLine($"{"Категорія",-15} | {"К-сть",-5} | {"Знайдені унікальні значення"}");
+            Console.WriteLine(new string('-', 60));
+
+            foreach (var category in _patterns.Keys)
+            {
+                var matches = GetUniqueMatches(text, category).ToList();
+                string valuesString = matches.Any() ? string.Join(", ", matches) : "-";
+                
+                // Форматований вивід таблицею
+                Console.WriteLine($"{category,-15} | {matches.Count,-5} | {valuesString}");
+            }
+            Console.WriteLine(new string('=', 60));
         }
     }
 
@@ -77,46 +98,38 @@ namespace RegexLabImproved
         {
             Console.OutputEncoding = System.Text.Encoding.UTF8;
 
-            // Текст, що містить пастки для старого коду (C#, C++, Hello, I, дати)
-            string testText = 
-                "Сучасні мови: C#, C++ та Java. Web використовує HTML5, JSON та CSS. " +
-                "Зверніть увагу на сервер 192.168.0.1, запущений 12.11.2025. " +
-                "Слова Hello, World, та займенник Я (I) не повинні потрапити у вибірку. " +
-                "Ще раз повторюю: HTML, JSON (дублікати мають зникнути).";
+            // Текст для тестування всіх випадків:
+            // - HTML5 (цифра в кінці)
+            // - MP3 (цифра всередині або в кінці)
+            // - C#, C++ (спецсимволи)
+            // - .NET (починається з крапки - наш поточний патерн це не ловить, якщо не додати, але C# ловить)
+            // - Дати та IP
+            string text = @"
+                Сучасний стек технологій включає: HTML5, CSS3, та JavaScript (JS).
+                Для бекенду використовують C#, C++ або Java.
+                Ми перейшли з MP3 на нові формати.
+                Сервер конфігурації знаходиться за адресою 192.168.1.10 або 10.0.0.5.
+                Дата релізу: 14.11.2025 (оновлено 15/11/2025).
+                Ігнорувати: просто слова Hello, World та I (одинарні).
+                Повтори для перевірки унікальності: C#, HTML5, 192.168.1.10.
+            ";
 
-            Console.WriteLine("Вхідний текст:\n" + testText);
+            Console.WriteLine("Вхідний текст:");
+            Console.WriteLine(text.Trim());
 
-            // 1. Основне завдання: Пошук та вивід унікальних абревіатур
             try
             {
-                var results = TextAnalyzer.GetUniqueAbbreviations(testText);
-
-                Console.WriteLine("\n[Результат основного завдання]");
-                if (results.Any())
-                {
-                    Console.WriteLine("Знайдені унікальні скорочення:");
-                    foreach (var abbr in results)
-                    {
-                        Console.ForegroundColor = ConsoleColor.Cyan;
-                        Console.WriteLine($"> {abbr}");
-                    }
-                    Console.ResetColor();
-                }
-                else
-                {
-                    Console.WriteLine("Нічого не знайдено.");
-                }
-
-                // 2. Бонусне завдання (Статистика)
-                TextAnalyzer.PrintAnalysisReport(testText);
-
+                var analyzer = new TextAnalyzer();
+                
+                // Виконання основного та бонусного завдання (Звіт)
+                analyzer.PrintFullReport(text);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Сталася помилка при обробці: {ex.Message}");
+                Console.WriteLine($"Критична помилка: {ex.Message}");
             }
 
-            Console.WriteLine("\nНатисніть Enter для завершення...");
+            Console.WriteLine("\nНатисніть Enter для виходу...");
             Console.ReadLine();
         }
     }
