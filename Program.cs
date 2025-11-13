@@ -5,58 +5,68 @@ using System.Linq;
 using System.Net;
 using System.Text.RegularExpressions;
 
-namespace RegexLabPro
+namespace RegexLabUltimate
 {
     /// <summary>
-    /// Клас-аналізатор, що поєднує потужність Regex та логічну валідацію C#.
+    /// Аналізатор тексту.
+    /// Реалізує пошук за шаблонами з суровою пост-валідацією.
     /// </summary>
     public class TextAnalyzer
     {
-        // Структура правила: Назва -> (Регулярний вираз, Функція валідації)
-        // Валідатор приймає рядок і повертає true, якщо це дійсно коректні дані.
-        private readonly Dictionary<string, (Regex Pattern, Func<string, bool> Validator)> _rules;
+        // Делегат для валідації: приймає рядок-кандидат, повертає true, якщо він валідний.
+        private delegate bool Validator(string candidate);
+
+        // Словник правил: Назва -> (Regex, Валідатор)
+        private readonly Dictionary<string, (Regex Pattern, Validator Validator)> _rules;
+
+        // Формати дат для суворої перевірки
+        private readonly string[] _dateFormats = { 
+            "d.M.yyyy", "dd.MM.yyyy", 
+            "d/M/yyyy", "dd/MM/yyyy", 
+            "yyyy-MM-dd" 
+        };
 
         public TextAnalyzer()
         {
+            // ExplicitCapture: покращує продуктивність, не зберігаючи безіменні групи.
+            // Compiled: пришвидшує роботу при багаторазовому використанні.
             var opts = RegexOptions.Compiled | RegexOptions.ExplicitCapture | RegexOptions.CultureInvariant;
             var timeout = TimeSpan.FromSeconds(1.0);
 
-            _rules = new Dictionary<string, (Regex, Func<string, bool>)>
+            _rules = new Dictionary<string, (Regex, Validator)>
             {
-                // 1. АБРЕВІАТУРИ (Складна логіка)
-                // Пояснення Regex:
-                // (?<![\w])\.NET\b      -> Ловить ".NET" (якщо перед крапкою немає букви)
-                // |                     -> АБО
-                // \b[A-Z]{2,}[0-9]*\b   -> Класичні (HTML, HTML5). Мінімум 2 великі літери. Цифри в кінці ок.
-                // |                     -> АБО
-                // \b[A-Z0-9]{1,2}[#+]+(?![a-zA-Z0-9]) -> C#, C++, J# (Спецсимволи, після яких немає букв)
+                // 1. АБРЕВІАТУРИ
+                // \p{Lu} - будь-яка велика літера Unicode (підтримка кирилиці: ЗСУ, НАТО).
+                // Логіка: 
+                //   1. .NET (окремий кейс, lookbehind перевіряє, що перед крапкою немає букви)
+                //   2. Класичні абревіатури: мінімум 2 великі літери, можуть бути цифри в кінці (HTML5).
+                //   3. Технічні: 1-2 великі літери + спецсимволи # або + (C#, C++).
                 { 
                     "Абревіатури", 
-                    (new Regex(@"(?<![\w])\.NET\b|\b[A-Z]{2,}[0-9]*\b|\b[A-Z0-9]{1,2}[#+]+(?![a-zA-Z0-9])", opts, timeout), 
-                    s => s != "II" && s != "III") // Приклад валідації: ігнорувати римські цифри, якщо треба
+                    (new Regex(@"(?<!\w)\.NET\b|\b\p{Lu}{2,}[0-9]*\b|\b\p{Lu}{1,2}[#+]+(?![a-zA-Z0-9])", opts, timeout), 
+                    IsValidAbbreviation) 
                 },
 
                 // 2. IP-АДРЕСИ (IPv4)
-                // Використовуємо суворий Regex, який не пускає числа > 299, 
-                // але точну перевірку до 255 зробимо через IPAddress.TryParse
+                // Попередній відбір через Regex, точна перевірка через IPAddress.Parse
                 { 
                     "IP-адреси", 
                     (new Regex(@"\b(?:\d{1,3}\.){3}\d{1,3}\b", opts, timeout), 
-                    s => IPAddress.TryParse(s, out _)) // C# перевірить, чи октети <= 255
+                    s => IPAddress.TryParse(s, out _)) 
                 },
 
                 // 3. ДАТИ
-                // Формат: dd.mm.yyyy або dd/mm/yyyy
+                // Попередній відбір, точна перевірка через TryParseExact
                 { 
                     "Дати", 
-                    (new Regex(@"\b\d{1,2}[./-]\d{1,2}[./-]\d{4}\b", opts, timeout), 
-                    s => DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.None, out _)) // Перевіряє 30 лютого і т.д.
+                    (new Regex(@"\b\d{1,4}[./-]\d{1,2}[./-]\d{2,4}\b", opts, timeout), 
+                    IsValidDate) 
                 }
             };
         }
 
         /// <summary>
-        /// Знаходить, фільтрує та валідує збіги.
+        /// Головний метод аналізу.
         /// </summary>
         public Dictionary<string, List<string>> Analyze(string text)
         {
@@ -66,37 +76,89 @@ namespace RegexLabPro
 
             foreach (var rule in _rules)
             {
-                string category = rule.Key;
-                Regex regex = rule.Value.Pattern;
-                Func<string, bool> isValid = rule.Value.Validator;
-
-                try
-                {
-                    // 1. Знаходимо всі кандидати через Regex
-                    var matches = regex.Matches(text)
-                                       .Cast<Match>()
-                                       .Select(m => m.Value)
-                                       .Distinct(); // Прибираємо дублікати
-
-                    // 2. Пропускаємо через C# валідатор (точність)
-                    var validMatches = new List<string>();
-                    foreach (var match in matches)
-                    {
-                        if (isValid(match))
-                        {
-                            validMatches.Add(match);
-                        }
-                    }
-
-                    results[category] = validMatches;
-                }
-                catch (RegexMatchTimeoutException)
-                {
-                    results[category] = new List<string> { "ERROR: Timeout" };
-                }
+                results[rule.Key] = ProcessCategory(text, rule.Value.Pattern, rule.Value.Validator);
             }
 
             return results;
+        }
+
+        /// <summary>
+        /// Приватний метод для обробки однієї категорії (Refactoring: зменшення дублювання).
+        /// </summary>
+        private List<string> ProcessCategory(string text, Regex regex, Validator validator)
+        {
+            var validMatches = new List<string>();
+
+            try
+            {
+                // Знаходимо унікальні кандидати
+                var candidates = regex.Matches(text)
+                                      .Cast<Match>()
+                                      .Select(m => m.Value)
+                                      .Distinct();
+
+                foreach (var candidate in candidates)
+                {
+                    try
+                    {
+                        // Захищений виклик валідатора
+                        if (validator(candidate))
+                        {
+                            validMatches.Add(candidate);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        // Логування помилки валідації конкретного значення (для дебагу)
+                        System.Diagnostics.Debug.WriteLine($"Помилка валідації '{candidate}': {ex.Message}");
+                    }
+                }
+            }
+            catch (RegexMatchTimeoutException)
+            {
+                validMatches.Add("ERROR: Regex Timeout");
+            }
+
+            return validMatches;
+        }
+
+        // --- ХЕЛПЕРИ ДЛЯ ВАЛІДАЦІЇ ---
+
+        private bool IsValidDate(string dateStr)
+        {
+            return DateTime.TryParseExact(
+                dateStr, 
+                _dateFormats, 
+                CultureInfo.InvariantCulture, 
+                DateTimeStyles.None, 
+                out _
+            );
+        }
+
+        private bool IsValidAbbreviation(string s)
+        {
+            // 1. Перевірка на ".NET" (це валідна абревіатура для нас)
+            if (s.Equals(".NET", StringComparison.OrdinalIgnoreCase)) return true;
+            
+            // 2. Фільтрація Римських цифр (I, II, IV, XIX...)
+            // Якщо слово складається ТІЛЬКИ з символів римських чисел, перевіряємо його структуру.
+            // Це простий евристичний фільтр.
+            if (IsRomanNumeral(s)) return false;
+
+            return true;
+        }
+
+        /// <summary>
+        /// Перевіряє, чи є рядок римським числом.
+        /// </summary>
+        private bool IsRomanNumeral(string s)
+        {
+            // Якщо є цифри або #/+, це точно не римське число (C++, HTML5)
+            if (s.Any(c => char.IsDigit(c) || c == '#' || c == '+')) return false;
+
+            // Регулярний вираз для перевірки коректності римських чисел
+            string romanPattern = @"^M{0,4}(CM|CD|D?C{0,3})(XC|XL|L?X{0,3})(IX|IV|V?I{0,3})$";
+            return Regex.IsMatch(s, romanPattern);
         }
     }
 
@@ -106,42 +168,52 @@ namespace RegexLabPro
         {
             Console.OutputEncoding = System.Text.Encoding.UTF8;
 
-            // ТЕСТОВІ ДАНІ (Складні випадки)
+            // Тестовий текст:
+            // - Кирилиця (ЗСУ)
+            // - Римські цифри (XXI століття) - мають ігноруватися
+            // - C#, .NET, HTML5 - мають знайтися
+            // - Некоректні дати
             string text = @"
-                Програмування: Використовуємо C#, C++, .NET 8 та HTML5.
-                Іноді пишемо на Node.js (не абревіатура) або JSON.
-                Хибні цілі: Hello (просто слово), I (одна буква), 999.999.999.999 (фейк IP).
-                Реальний IP: 192.168.0.1 та 10.0.0.255.
-                Дати: 
-                - 24.08.1991 (День Незалежності) - ОК
-                - 30.02.2023 (Неіснуюча дата) - має бути відфільтровано
-                - 01/01/2000 - ОК
+                Вітаємо! Ми використовуємо стек: C#, .NET Core, HTML5 та CSS3.
+                Наші сервери: 192.168.0.1 (local) та 8.8.8.8 (DNS).
+                Історія: у XXI столітті (а також у XX) технології змінилися.
+                Король Людовик XIV не знав про JSON.
+                Важливі дати: 24.08.1991 (День Незалежності), 
+                32.01.2023 (помилка), 2023-12-31 (новий рік).
+                Українські скорочення: ЗСУ, НБУ, АЕС.
             ";
 
             Console.WriteLine("--- Вхідний текст ---");
             Console.WriteLine(text.Trim());
             Console.WriteLine(new string('-', 40));
 
-            var analyzer = new TextAnalyzer();
-            var report = analyzer.Analyze(text);
-
-            Console.WriteLine("\n--- Результати аналізу ---");
-            foreach (var category in report)
+            try
             {
-                Console.ForegroundColor = ConsoleColor.Yellow;
-                Console.Write($"{category.Key}: ");
-                Console.ResetColor();
-                Console.WriteLine($"{category.Value.Count} знайдено");
+                var analyzer = new TextAnalyzer();
+                var report = analyzer.Analyze(text);
 
-                if (category.Value.Count > 0)
+                Console.WriteLine("\n--- Результати аналізу (Ultimate) ---");
+                foreach (var category in report)
                 {
-                    Console.WriteLine("   " + string.Join(", ", category.Value));
+                    Console.ForegroundColor = ConsoleColor.Yellow;
+                    Console.Write($"{category.Key}: ");
+                    Console.ResetColor();
+                    Console.WriteLine($"{category.Value.Count} шт.");
+
+                    if (category.Value.Any())
+                    {
+                        Console.WriteLine("   " + string.Join(", ", category.Value));
+                    }
+                    else
+                    {
+                        Console.WriteLine("   (Пусто)");
+                    }
+                    Console.WriteLine();
                 }
-                else
-                {
-                    Console.WriteLine("   (Пусто)");
-                }
-                Console.WriteLine();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Критична помилка: {ex.Message}");
             }
 
             Console.WriteLine("Натисніть Enter...");
