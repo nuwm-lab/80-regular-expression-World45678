@@ -1,73 +1,73 @@
 using System;
 using System.Collections.Generic;
+using System.Linq; // Потрібно для Distinct()
 using System.Text.RegularExpressions;
 
-namespace RegexLab
+namespace RegexLabImproved
 {
     /// <summary>
-    /// Клас, що відповідає за логіку пошуку абревіатур.
+    /// Статичний клас для аналізу тексту.
+    /// Містить попередньо скомпільовані регулярні вирази для продуктивності.
     /// </summary>
-    public static class AbbreviationSearcher
+    public static class TextAnalyzer
     {
-        // Пояснення регулярного виразу:
-        // \b           - Границя слова (початок)
-        // [A-Z0-9#+]{2,} - Шукаємо символи (великі літери, цифри, # або +)
-        //                у кількості 2 або більше разів (щоб знайти C#, але пропустити "I")
-        // \b           - Границя слова (кінець)
-        private const string Pattern = @"\b[A-Z0-9#+]{2,}\b";
+        // 1. ВИПРАВЛЕНИЙ REGEX ДЛЯ АБРЕВІАТУР
+        // Логіка:
+        // Частина 1: \b[A-Z]{2,}\b 
+        //    -> Знаходить слова з 2+ великих літер (HTML, JSON). \b гарантує, що це окреме слово.
+        //    -> Це відсіює "Hello" (бо там є малі) і "I" (бо одна літера).
+        //
+        // Частина 2: \b[A-Z][A-Za-z0-9]*[#+]+
+        //    -> Знаходить терміни, що починаються з літери, але обов'язково закінчуються на # або + (C#, C++).
+        //    -> Тут ми не ставимо \b в кінці, бо #/+ не є "word char", і \b там не спрацює як очікується.
+        //
+        private const string AbbreviationPattern = @"\b[A-Z]{2,}\b|\b[A-Z][A-Za-z0-9]*[#+]+";
+        
+        // Додаткові патерни для бонусного завдання
+        private const string IpPattern = @"\b(?:\d{1,3}\.){3}\d{1,3}\b";
+        private const string DatePattern = @"\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b";
+
+        // Створюємо Regex один раз із опцією Compiled для швидкодії
+        private static readonly Regex _abbreviationRegex = new Regex(AbbreviationPattern, RegexOptions.Compiled);
+        private static readonly Regex _ipRegex = new Regex(IpPattern, RegexOptions.Compiled);
+        private static readonly Regex _dateRegex = new Regex(DatePattern, RegexOptions.Compiled);
 
         /// <summary>
-        /// Знаходить всі абревіатури у тексті.
+        /// Знаходить унікальні абревіатури у тексті.
         /// </summary>
-        /// <param name="text">Вхідний текст.</param>
-        /// <returns>Колекція унікальних знайдених абревіатур.</returns>
-        public static IEnumerable<string> FindAbbreviations(string text)
+        public static IEnumerable<string> GetUniqueAbbreviations(string text)
         {
-            if (string.IsNullOrWhiteSpace(text))
-            {
-                yield break;
-            }
+            if (string.IsNullOrWhiteSpace(text)) return Enumerable.Empty<string>();
 
-            // Використовуємо Regex.Matches для пошуку всіх входжень
-            MatchCollection matches = Regex.Matches(text, Pattern);
-
-            foreach (Match match in matches)
-            {
-                // Повертаємо значення знайденого збігу
-                yield return match.Value;
-            }
+            // Отримуємо Matches, перетворюємо на String, фільтруємо унікальні
+            return _abbreviationRegex.Matches(text)
+                                     .Cast<Match>()
+                                     .Select(m => m.Value)
+                                     .Distinct(); 
         }
 
         /// <summary>
-        /// Метод для підсвічування знайдених абревіатур у консолі.
-        /// (Додаткова функціональність для наочності)
+        /// Комплексний аналіз тексту (Бонусне завдання).
         /// </summary>
-        public static void PrintTextWithHighlights(string text)
+        public static void PrintAnalysisReport(string text)
         {
-            var matches = Regex.Matches(text, Pattern);
-            int lastIndex = 0;
+            Console.WriteLine("\n--- Звіт аналізу тексту ---");
 
-            Console.WriteLine("\n--- Візуалізація у тексті ---");
-            
-            foreach (Match match in matches)
+            var abbrs = _abbreviationRegex.Matches(text);
+            var ips = _ipRegex.Matches(text);
+            var dates = _dateRegex.Matches(text);
+
+            Console.WriteLine($"Знайдено сутностей:");
+            Console.WriteLine($" - Абревіатур: {abbrs.Count}");
+            Console.WriteLine($" - IP-адрес:   {ips.Count}");
+            Console.WriteLine($" - Дат:        {dates.Count}");
+
+            Console.WriteLine("\nДеталі (Абревіатури):");
+            foreach (var item in abbrs.Cast<Match>().Select(m => m.Value).Distinct())
             {
-                // Друкуємо текст ДО абревіатури звичайним кольором
-                Console.Write(text.Substring(lastIndex, match.Index - lastIndex));
-
-                // Друкуємо абревіатуру іншим кольором
-                Console.ForegroundColor = ConsoleColor.Cyan;
-                Console.Write(match.Value);
-                Console.ResetColor();
-
-                lastIndex = match.Index + match.Length;
+                Console.Write($"[{item}] ");
             }
-
-            // Друкуємо хвіст тексту
-            if (lastIndex < text.Length)
-            {
-                Console.Write(text.Substring(lastIndex));
-            }
-            Console.WriteLine("\n-----------------------------");
+            Console.WriteLine("\n---------------------------");
         }
     }
 
@@ -77,39 +77,46 @@ namespace RegexLab
         {
             Console.OutputEncoding = System.Text.Encoding.UTF8;
 
-            // 1. Тестові дані (змішаний текст із різними варіантами)
-            string sampleText = 
-                "Сучасні веб-технології включають HTML, CSS та JavaScript. " +
-                "Для бекенду часто використовують C# (.NET Core) або Java. " +
-                "Обмін даними відбувається у форматі JSON або XML. " +
-                "Також існують старі формати, як MP3. " +
-                "А ось звичайне слово Hello не має бути знайдено, як і займенник Я.";
+            // Текст, що містить пастки для старого коду (C#, C++, Hello, I, дати)
+            string testText = 
+                "Сучасні мови: C#, C++ та Java. Web використовує HTML5, JSON та CSS. " +
+                "Зверніть увагу на сервер 192.168.0.1, запущений 12.11.2025. " +
+                "Слова Hello, World, та займенник Я (I) не повинні потрапити у вибірку. " +
+                "Ще раз повторюю: HTML, JSON (дублікати мають зникнути).";
 
-            Console.WriteLine("Лабораторна робота: Регулярні вирази (Regex)\n");
-            Console.WriteLine("Вхідний текст:");
-            Console.WriteLine(sampleText);
+            Console.WriteLine("Вхідний текст:\n" + testText);
 
-            // 2. Виконання пошуку
-            var abbreviations = AbbreviationSearcher.FindAbbreviations(sampleText);
-
-            // 3. Виведення результатів
-            Console.WriteLine("\nЗнайдені абревіатури:");
-            int count = 0;
-            foreach (var abbr in abbreviations)
+            // 1. Основне завдання: Пошук та вивід унікальних абревіатур
+            try
             {
-                count++;
-                Console.WriteLine($"{count}. {abbr}");
+                var results = TextAnalyzer.GetUniqueAbbreviations(testText);
+
+                Console.WriteLine("\n[Результат основного завдання]");
+                if (results.Any())
+                {
+                    Console.WriteLine("Знайдені унікальні скорочення:");
+                    foreach (var abbr in results)
+                    {
+                        Console.ForegroundColor = ConsoleColor.Cyan;
+                        Console.WriteLine($"> {abbr}");
+                    }
+                    Console.ResetColor();
+                }
+                else
+                {
+                    Console.WriteLine("Нічого не знайдено.");
+                }
+
+                // 2. Бонусне завдання (Статистика)
+                TextAnalyzer.PrintAnalysisReport(testText);
+
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Сталася помилка при обробці: {ex.Message}");
             }
 
-            if (count == 0)
-            {
-                Console.WriteLine("Абревіатур не знайдено.");
-            }
-
-            // 4. Бонус: Візуалізація
-            AbbreviationSearcher.PrintTextWithHighlights(sampleText);
-
-            Console.WriteLine("\nНатисніть Enter для виходу...");
+            Console.WriteLine("\nНатисніть Enter для завершення...");
             Console.ReadLine();
         }
     }
